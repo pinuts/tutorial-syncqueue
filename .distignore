@@ -1,0 +1,11 @@
+cmsbs-conf/conf.d/devel*
+cmsbs-conf/conf.d/00_ci.properties
+cmsbs-conf/cse/plugins/README
+cmsbs-conf/cse/plugins/de.pinuts.cmsbs.dev*
+cmsbs-conf/cse/plugins/de.pinuts.cmsbs.testdriver*
+cmsbs-conf/cse/plugins/de.pinuts.tutorial.test/*
+cmsbs-conf/cse/.*.js
+*/.eslintrc.js
+*/.vscode.js
+*/.empty
+*~

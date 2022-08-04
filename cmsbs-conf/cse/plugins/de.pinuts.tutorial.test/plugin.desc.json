@@ -1,0 +1,14 @@
+{
+    "$schema": "http://git.intra.pinuts.de/cmsbs/cmsbs/raw/master/doc/json-schemas/plugin.desc.json",
+    "__encoding": "Pinuts File Encoding: UTF-8",
+    "title": "",
+    "description": "",
+    "name": "de.pinuts.tutorial.test",
+    "hidden": true,
+    "um": ">=7.32.0",
+    "version": "0.0.1",
+    "dependencies": [
+        { "name": "de.pinuts.tutorial" },
+        { "name": "de.pinuts.cmsbs.testdriver2" }
+    ]
+}

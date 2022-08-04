@@ -1,0 +1,43 @@
+apply from: '.umstarter.gradle'
+
+// Siehe Kickstarter.md für Beispiele und Erklärungen.
+
+dependencies {
+    // UM Release Notes: https://pinutswiki.atlassian.net/wiki/x/AQDvXg
+    runtime('de.pinuts.cmsbs:UM:7.47.0')
+
+    runtime('de.pinuts.cmsbs:CseConsole:7.32.3')
+    runtime('de.pinuts.cmsbs:TestDriver2:2.0.14')
+}
+
+pinuts.projectName = 'MyProject'
+pinuts.groupId = 'de.customer'
+pinuts.um.port = System.getenv('MY_PROJECT_SERVER_PORT') ?: '8080'
+pinuts.um.localLicenseFile = file('env/devel/cmsbs-conf/cmsbs.license')
+pinuts.version = getVersionFromPluginDescriptor('the_plugin/plugin.desc.json')
+
+startUm.dependsOn << umSchemaUpdate
+run.dependsOn << umSchemaUpdate
+test.dependsOn << testDriver_umci
+
+setup.doLast {
+    ln('cmsbs-conf/cse/plugins/de.pinuts.tutorial', pinuts.um.pluginsDir)
+    ln('cmsbs-conf/cse/plugins/de.pinuts.tutorial.test', pinuts.um.pluginsDir)
+
+    fileTree('cmsbs-conf/conf.d').each {target ->
+        ln(target, pinuts.um.confdDir)
+    }
+    fileTree('env/devel/cmsbs-conf/conf.d').each {target ->
+        ln(target, pinuts.um.confdDir)
+    }
+
+    // fileTree('cmsbs-conf/entryTypes').each {target ->
+    //     ln(target, new File(pinuts.um.cmsbsConfDir, 'entryTypes'))
+    // }
+    // fileTree('cmsbs-conf/adminRoles').each {target ->
+    //     ln(target, new File(pinuts.um.cmsbsConfDir, 'adminRoles'))
+    // }
+}
+
+setup.finalizedBy vscode
+

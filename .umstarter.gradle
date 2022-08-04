@@ -1,0 +1,777 @@
+apply plugin: 'java'
+apply plugin: 'maven-publish'
+
+buildscript {
+    repositories {
+        mavenCentral()
+    }
+    dependencies {
+        // https://http-builder-ng.github.io/http-builder-ng/
+        // https://http-builder-ng.github.io/http-builder-ng/docs/javadoc/index.html
+        classpath group: 'io.github.http-builder-ng', name: 'http-builder-ng-core', version: '1.0.3'
+
+        // For S3 support:
+        classpath group: 'com.amazonaws', name: 'aws-java-sdk-core', version: '1.11.5'
+    }
+}
+
+import java.nio.file.*
+import java.util.*
+import static org.apache.tools.ant.taskdefs.condition.Os.*
+import groovy.json.*
+
+import static groovyx.net.http.HttpBuilder.configure
+import groovyx.net.http.FromServer
+
+project.ext.pinuts = [
+    projectName: 'NoName',
+    env: project.hasProperty('env') ? project.getProperty('env') : 'devel',
+    um: [
+        installerVarfile: null,
+        localInstallerVarFile: new File(buildDir, 'installer.varfile'),
+        localLicenseFile: new File(buildDir, 'cmsbs.license'),
+        serverHome: file('UM'),
+        port: '8080',
+        autoPort: true,
+        shutDownAfterTests: false,
+        installerFile: null,
+        jdbcDriver: null
+    ],
+    version: null,
+    docker: [
+        tag: null
+    ],
+    extraDist: []
+]
+project.ext.pinuts.envDir = file('env/' + project.ext.pinuts.env)
+
+// Shortcut:
+ext.pinuts = project.ext.pinuts
+
+// Colors and text styles:
+def ESC = '\u001b'
+ext.STYLE_NORMAL = "${ESC}[0m"
+ext.STYLE_BOLD = "${ESC}[1m"
+ext.STYLE_DIM = "${ESC}[2m"
+ext.STYLE_UNDERLINED = "${ESC}[4m"
+ext.STYLE_INVERTED = "${ESC}[7m"
+
+ext.FG_COLOR_DEFAULT = "${ESC}[39m"
+ext.FG_COLOR_RED = "${ESC}[31m"
+ext.FG_COLOR_CYAN = "${ESC}[36m"
+ext.FG_COLOR_WHITE = "${ESC}[97m"
+ext.FG_COLOR_GRAY = "${ESC}[37m"
+
+ext.BG_COLOR_DEFAULT = "${ESC}[49m"
+ext.BG_COLOR_RED = "${ESC}[41m"
+ext.BG_COLOR_GREEN = "${ESC}[42m"
+ext.BG_COLOR_LIGHT_GREEN = "${ESC}[102m"
+ext.BG_COLOR_LIGHT_RED = "${ESC}[101m"
+
+ext.STYLE_DEFAULT = ext.STYLE_NORMAL
+ext.STYLE_IMPORTANT = ext.STYLE_BOLD
+ext.STYLE_DANGER = ext.BG_COLOR_RED + ext.FG_COLOR_WHITE
+ext.STYLE_DEBUG = ext.FG_COLOR_GRAY
+// ext.STYLE_ERROR = ''
+ext.STYLE_SUCCESS = ext.BG_COLOR_LIGHT_GREEN + ext.FG_COLOR_WHITE
+
+configurations {
+    // Make sure configuration "runtime" exists (for gradle >= 7):
+    runtime
+}
+
+configurations.all {
+    resolutionStrategy.cacheChangingModulesFor 0, 'seconds'
+    resolutionStrategy.cacheDynamicVersionsFor 0, 'seconds'
+}
+
+repositories {
+    maven {
+        url 'https://pinuts.mycloudrepo.io/repositories/um'
+        credentials {
+            username System.getenv('PINUTS_MAVENREPO_USERNAME') ?: ''
+            password System.getenv('PINUTS_MAVENREPO_PASSWORD') ?: ''
+        }
+    }
+    maven {
+        url 'https://pinuts.mycloudrepo.io/repositories/login'
+        credentials {
+            username System.getenv('PINUTS_MAVENREPO_USERNAME') ?: ''
+            password System.getenv('PINUTS_MAVENREPO_PASSWORD') ?: ''
+        }
+    }
+    maven {
+        url 'https://pinuts.mycloudrepo.io/repositories/servicedesk'
+        credentials {
+            username System.getenv('PINUTS_MAVENREPO_USERNAME') ?: ''
+            password System.getenv('PINUTS_MAVENREPO_PASSWORD') ?: ''
+        }
+    }
+}
+
+ext {
+    if (System.getenv('AWS_ACCESS_KEY_ID')) {
+        project.ext.awsCredentials = new com.amazonaws.auth.EnvironmentVariableCredentialsProvider().credentials
+    }
+}
+
+ext.ln = {target, linkName ->
+    target = file(target)
+    linkName = new File(linkName, target.name)
+
+    if (Files.isSymbolicLink(linkName.toPath())) {
+        linkName.delete()
+    } else if (linkName.isDirectory()) {
+        linkName.deleteDir()
+    } else {
+        linkName.delete()
+    }
+
+    logger.quiet "${STYLE_DEBUG}ln $target $linkName${STYLE_DEFAULT}"
+
+    Files.createSymbolicLink(linkName.toPath(), target.toPath())
+}
+
+
+ext.relLn = {target, linkName ->
+    target = file(target)
+    linkName = new File(linkName, target.name)
+
+    target = target.toPath()
+    def symlink = linkName.toPath()
+
+    if (Files.isSymbolicLink(symlink)) {
+        linkName.delete()
+    } else if (linkName.isDirectory()) {
+        linkName.deleteDir()
+    } else {
+        linkName.delete()
+    }
+
+    def relativeSrc = symlink.getParent().relativize(target);
+    symlink.getParent().toFile().mkdirs();
+    logger.quiet "${STYLE_DEBUG}relLn $symlink $relativeSrc${STYLE_DEFAULT}"
+    Files.createSymbolicLink(symlink, relativeSrc);
+}
+
+ext.cp = {src, dst ->
+    src = file(src)
+    dst = file(dst)
+
+    if (dst.isDirectory()) {
+        dst = new File(dst, src.name)
+    }
+    if (dst.isFile()) {
+        dst.delete()
+    }
+
+    logger.quiet("${STYLE_DEBUG}cp $src $dst${STYLE_DEFAULT}")
+    Files.copy(src.toPath(), dst.toPath())
+}
+
+ext.getVersionFromPluginDescriptor = {pluginDescFile ->
+    pluginDescFile = file(pluginDescFile)
+    def jsonSlurper = new groovy.json.JsonSlurper()
+    def pluginDesc = jsonSlurper.parseText(pluginDescFile.getText('latin1'))
+
+    if (!pluginDesc.version) throw new GradleException("No `version` in plugin descriptor: $pluginDescFile")
+
+    return pluginDesc.version
+}
+
+ext.projectRelativePath = {f ->
+    return new File( file(".").toURI().relativize( f.toURI() ).toString() )
+}
+
+ext.getCmsbsPluginDistFile = { ->
+    def suffix = ''
+    if (pinuts.env != 'devel') suffix += '-' + pinuts.env
+    if (pinuts.version) suffix += '_' + pinuts.version
+    return new File(buildDir, pinuts.projectName + suffix + '.zip')
+}
+
+
+task applyConfigDefaults(description: 'Applies sensible defaults', group: 'Pinuts') {
+    doLast {
+        if (pinuts.um) {
+            if (pinuts.um.autoPort && System.getenv('CI_PROJECT_ID')) {
+                pinuts.um.port = '' + (Integer.parseInt(System.getenv('CI_PROJECT_ID')) + 9000)
+            }
+            pinuts.um.serverHome = file(project.ext.pinuts.um.serverHome)
+            pinuts.um.cmsbsWorkDir = new File(project.ext.pinuts.um.serverHome, 'cmsbs-work')
+            pinuts.um.cmsbsConfDir = new File(project.ext.pinuts.um.serverHome, 'cmsbs-conf')
+            pinuts.um.libDir = new File(project.ext.pinuts.um.serverHome, 'cmsbs/WEB-INF/lib')
+            pinuts.um.docDir = new File(project.ext.pinuts.um.serverHome, 'doc')
+            pinuts.um.scriptsDir = new File(project.ext.pinuts.um.serverHome, 'scripts')
+            pinuts.um.cseDir = new File(project.ext.pinuts.um.cmsbsConfDir, 'cse')
+            pinuts.um.pluginsDir = new File(project.ext.pinuts.um.cseDir, 'plugins')
+            pinuts.um.confdDir = new File(project.ext.pinuts.um.cmsbsConfDir, 'conf.d')
+            pinuts.um.webappsDir = new File(project.ext.pinuts.um.cmsbsWorkDir, 'webapps')
+            pinuts.um.webappsRootDir = new File(project.ext.pinuts.um.webappsDir, 'ROOT')
+            pinuts.um.localLicenseFile = file(project.ext.pinuts.um.localLicenseFile)
+            pinuts.um.localInstallerVarFile = file(project.ext.pinuts.um.localInstallerVarFile)
+            pinuts.um.guiUrl = project.ext.pinuts.um.guiUrl ?: "http://" + InetAddress.getLocalHost().getHostName() + ":$pinuts.um.port/cmsbs"
+            pinuts.um.pidFile = new File(project.ext.pinuts.um.serverHome, 'cmsbs.pid')
+        }
+
+        pinuts.distFilename = getCmsbsPluginDistFile()
+        pinuts.currentDistFile = new File(buildDir, 'current.zip');
+
+        pinuts.docker.tag || (pinuts.docker.tag = pinuts.projectName.toLowerCase())
+        if (pinuts.docker.tag.indexOf(':') == -1) {
+            pinuts.docker.tag += ':' + pinuts.env
+        }
+    }
+}
+
+
+task stopUm(description: 'Stops UM', group: 'pinuts') {
+    dependsOn applyConfigDefaults
+
+    onlyIf {
+        pinuts.um
+    }
+
+    doLast {
+        def instanceId = "UM_STANDALONE_" + System.getProperty('user.name') + "_" + pinuts.um.port
+
+        if (isFamily(FAMILY_MAC) || isFamily(FAMILY_UNIX)) {
+            // Try to stop gracefully
+
+            def pkillCommand = ["pkill", "-f", instanceId]
+            logger.quiet "Stoppping UM: ${STYLE_DEBUG}${pkillCommand.join(' ')}${STYLE_DEFAULT}"
+            def pkill = new ProcessBuilder(pkillCommand)
+            pkill.start().waitFor()
+
+            def stopped = false
+            for (def wait = 0; wait < 20; wait++) {
+                def pgrep = new ProcessBuilder(["pgrep", "-f", instanceId])
+                def ret = pgrep.start().waitFor()
+                if (ret == 0 && wait > 10) {
+                    // Kill forcefully:
+                    logger.quiet 'UM did not shutdown gracefully. Sending signal 9...'
+                    pkill = new ProcessBuilder(["pkill", "-9", "-f", instanceId])
+                    ret = pkill.start().waitFor()
+                }
+                if (ret == 1) {
+                    stopped = true
+                    if (pinuts.um && pinuts.um.pidFile.isFile()) {
+                        pinuts.um.pidFile.delete()
+                    }
+                    break
+                }
+                sleep(1000)
+            }
+            if (!stopped) {
+                throw new GradleException('Unable to kill UM')
+            }
+        } else {
+            throw new GradleException("TBI on Windows...")
+        }
+    }
+}
+
+
+task stop(description: 'Stops UM (and optionally other services)', group: 'pinuts') {
+    dependsOn stopUm
+}
+
+
+task downloadDependencies(type: Copy, description: 'Downloads UM plugins and other dependencies', group: 'pinuts') {
+    from configurations.runtime
+    into new File(buildDir, 'downloads')
+}
+
+
+task prepareBuildDir(description: 'Creates the `build` directory', group: 'pinuts') {
+    buildDir.mkdirs()
+}
+
+
+task downloadUmLicense(description: 'Downloads the UM license file', group: 'pinuts') {
+    dependsOn prepareBuildDir, applyConfigDefaults
+
+    onlyIf {
+        pinuts.um
+    }
+
+    doLast {
+        def license = pinuts.um.localLicenseFile
+
+        if (!license.file) {
+            logger.error("${STYLE_DANGER}Missing UM license file.${STYLE_DEFAULT}")
+            logger.error("${STYLE_DANGER}Manually put your license file to ${license} and run `gradle setup` again.${STYLE_DEFAULT}")
+        }
+    }
+}
+
+
+task downloadUmInstallerVarfile(description: 'Downloads the UM installer var file', group: 'pinuts') {
+    dependsOn prepareBuildDir, applyConfigDefaults
+
+    def installerVarfile = project.ext.pinuts.um.localInstallerVarFile
+
+    onlyIf {
+        project.ext.pinuts.um
+    }
+
+    doLast {
+        if (!installerVarfile.file) {
+            if (project.ext.pinuts.um.installerVarfile) {
+                logger.quiet("${STYLE_DEBUG}Downloading installer varfile from $project.ext.pinuts.um.installerVarfile${STYLE_DEFAULT}")
+                installerVarfile << new URL(project.ext.pinuts.um.installerVarfile).text
+
+                def content = installerVarfile.getText('latin1')
+                content = content.replaceAll(/sys.installationDir.*/, "sys.installationDir=$project.ext.pinuts.um.serverHome")
+                content = content.replaceAll(/license_file.*/, "license_file=$project.ext.pinuts.um.localLicenseFile")
+                installerVarfile.write(content, 'latin1')
+            } else {
+                logger.quiet("${STYLE_NORMAL}Generating ${installerVarfile}...${STYLE_DEFAULT}")
+                installerVarfile.write("""
+sys.installationDir=$project.ext.pinuts.um.serverHome
+license_file=$project.ext.pinuts.um.localLicenseFile
+
+database_setup\$Boolean=true
+database_type\$Integer=6
+db_schema_auto_upgrade\$Boolean=true
+
+tomcat_setup\$Boolean=false
+license_setup\$Boolean=true
+email_setup\$Boolean=false
+smtp_setup\$Boolean=false
+imap_setup\$Boolean=false
+
+# Embedded Tomcat
+sys.component.238614\$Boolean=true
+
+sys.component.17\$Boolean=true
+sys.component.20637\$Boolean=false
+sys.component.20638\$Boolean=false
+sys.component.20039\$Boolean=true
+sys.component.226347\$Boolean=false
+sys.component.228992\$Boolean=false
+sys.component.236151\$Boolean=false
+""", 'latin1')
+            }
+        }
+    }
+}
+
+
+task installUm(description: 'Installs the Universal Messenger', group: 'pinuts') {
+    dependsOn stop, downloadUmInstallerVarfile, downloadUmLicense
+
+    def installerFile
+
+    onlyIf {
+        project.ext.pinuts.um
+    }
+
+    doFirst {
+        if (project.ext.pinuts.um.installerFile) {
+            installerFile = file(project.ext.pinuts.um.installerFile)
+        }
+
+        for (def depFile in configurations.runtime.resolve()) {
+            if (depFile.name.matches(/UM-.*\.sh/)) {
+                installerFile = depFile
+                if (project.ext.pinuts.um.installerFile == null) project.ext.pinuts.um.installerFile = installerFile
+            }
+        }
+    }
+
+    doLast {
+        if (installerFile) {
+            logger.quiet "Installing UM: ${STYLE_IMPORTANT}$project.ext.pinuts.um.serverHome${STYLE_DEFAULT}"
+
+            pinuts.um.serverHome.mkdirs()
+
+            def command = ["sh", installerFile.path, "-q", "-varfile", pinuts.um.localInstallerVarFile.path]
+            def pb = new ProcessBuilder(command);
+            def p = pb.start()
+            p.waitForOrKill(120000)
+            if (p.exitValue() != 0) {
+                throw new GradleException('Installer failed with exit code ' + p.exitValue() + ': ' + command.join(' ') + '\n' + p.inputStream.text + p.errorStream.text)
+            }
+
+            def umrcFile = new File(pinuts.um.scriptsDir, '.umrc')
+            def umrcContent = umrcFile.getText('latin1')
+
+            umrcContent = umrcContent.replaceAll(/[# ]*export SERVER_PORT=.*/, "export SERVER_PORT=${project.ext.pinuts.um.port}")
+            umrcFile.write(umrcContent, 'latin1')
+
+            if (pinuts.um.jdbcDriver) {
+                def url = new URL(pinuts.um.jdbcDriver);
+                def path = url.getPath();
+                def fname = path.substring(path.lastIndexOf('/') + 1);
+                def outfile = new File(pinuts.um.libDir, fname);
+                logger.quiet "Downloading " + pinuts.um.jdbcDriver + " to " + outfile;
+                if (outfile.isFile()) outfile.delete()
+                outfile.withOutputStream { out -> url.withInputStream { from -> out << from; } }
+            }
+
+            // Workaround: UM-571 Versionskonflikt rund um Activation / JavaMail auflösen
+            new File(pinuts.um.libDir, 'javax.activation.jar').renameTo(new File(pinuts.um.serverHome, 'server/lib/javax.activation.jar'))
+        }
+    }
+}
+
+
+task umSchemaUpdate(description: 'Performs UM schema update', group: 'pinuts') {
+    dependsOn applyConfigDefaults
+
+    onlyIf {
+        project.ext.pinuts.um
+    }
+
+    doLast {
+        def schemaUpdateScript = new File(pinuts.um.scriptsDir, 'schemaUpdate.sh')
+        logger.quiet "Running DB schema update: ${schemaUpdateScript.path}"
+        def command = ["sh", schemaUpdateScript.path, "cmsbs.properties", "update"]
+        def pb = new ProcessBuilder(command)
+        def p = pb.start()
+        p.waitForOrKill(1000 * 60 * 60)
+        if (p.exitValue() != 0 && p.exitValue() != 3) {
+            throw new GradleException('Schema update failed with exit code ' + p.exitValue() + ': ' + command.join(' ') + '\n' + p.inputStream.text + p.errorStream.text)
+        }
+    }
+}
+
+
+task installUmPlugins(description: 'Installs UM plugins', group: 'pinuts') {
+    dependsOn stop, installUm, applyConfigDefaults
+
+    onlyIf {
+        project.ext.pinuts.um
+    }
+
+    doLast {
+        for (def zipFile in configurations.runtime.resolve()) {
+            if (zipFile.name.matches(/.*\.(zip|ZIP)/)) {
+                logger.quiet "${STYLE_DEBUG}Installing UM plugin: $zipFile.name${STYLE_DEFAULT}"
+
+                ant.unzip( src: zipFile,
+                           dest: project.ext.pinuts.um.serverHome,
+                           // allowFilesToEscapeDest: false,     /* Geht erst ab gradle 4.4 :( */
+                           overwrite: true )
+            }
+        }
+    }
+}
+
+task startUm(description: 'Starts UM', group: 'pinuts') {
+    dependsOn applyConfigDefaults, stopUm
+
+    onlyIf {
+        project.ext.pinuts.um
+    }
+
+    doLast {
+        logger.quiet "Starting UM at ${STYLE_IMPORTANT}${project.ext.pinuts.um.guiUrl}${STYLE_DEFAULT}"
+        if (isFamily(FAMILY_MAC) || isFamily(FAMILY_UNIX)) {
+            def command = [new File(project.ext.pinuts.um.scriptsDir, 'startup.sh').path]
+            def pb = new ProcessBuilder(command)
+            def env = pb.environment()
+            env.put("SERVER_PORT", "$project.ext.pinuts.um.port")
+            def p = pb.start()
+        } else {
+            throw new GradleException("TBI on Windows...")
+        }
+    }
+}
+
+task start(description: 'Starts UM (and optionally other services)', group: 'pinuts') {
+    dependsOn startUm
+}
+
+
+task setup(description: 'Installs UM and plugins', group: 'pinuts') {
+    dependsOn stop, installUm, installUmPlugins
+}
+
+
+task run(type: Exec, description: 'Starts UM and shows stdout until Ctrl+C', group: 'pinuts') {
+    dependsOn applyConfigDefaults, stopUm
+    // finalizedBy stopUm
+
+    onlyIf {
+        project.ext.pinuts.um
+    }
+
+    doFirst {
+        logger.quiet "Starting UM at $project.ext.pinuts.um.guiUrl"
+
+        executable(new File(pinuts.um.scriptsDir, 'run.sh').path)
+        environment("SERVER_PORT", "$project.ext.pinuts.um.port")
+    }
+}
+
+
+task destroy(type: Delete, description: 'Stops and deletes UM and embedded database files', group: 'pinuts') {
+    dependsOn applyConfigDefaults, stop
+    finalizedBy clean
+
+    onlyIf {
+        pinuts.um
+    }
+
+    delete pinuts.um.serverHome
+    followSymlinks = false
+}
+
+
+task dist(description: 'Builds the deployable (ZIP file)', group: 'pinuts') {
+    dependsOn setup, prepareBuildDir
+
+    doLast {
+        def distignore = file('.distignore')
+
+        pinuts.distFilename.delete()
+        pinuts.currentDistFile.delete();
+
+        logger.quiet "Building deployable for \"${pinuts.env}\": ${STYLE_IMPORTANT}$project.ext.pinuts.distFilename${STYLE_DEFAULT}"
+
+        // Das lokale 'cmsbs-conf/' kommt immer mit
+        logger.quiet " ... cmsbs-conf/**"
+        exec {
+            commandLine 'zip', '-9qr', '-x@.distignore', project.ext.pinuts.distFilename.path, 'cmsbs-conf'
+        }
+
+        // In extraDist koennten noch weitere Pfade beannt sein, einfach dazupacken
+        if (project.ext.pinuts.extraDist) {
+            project.ext.pinuts.extraDist.each { dir ->
+                logger.quiet " ... " + dir
+                exec {
+                    commandLine 'zip', '-9qr', '-x@.distignore', project.ext.pinuts.distFilename.path, dir
+                }
+            }
+        }
+
+        // Plugin-Zusamenstellung aus lokaler Installation zusammenpacken
+        if (project.ext.pinuts.um && project.ext.pinuts.um.serverHome.isDirectory()) {
+            logger.quiet " ... ${projectRelativePath(pinuts.um.serverHome)}/cmsbs-conf/cse/plugins/**"
+
+            exec {
+                workingDir project.ext.pinuts.um.serverHome
+                commandLine 'zip', '-9qr', '-x@../.distignore', project.ext.pinuts.distFilename.path, 'cmsbs-conf/cse/plugins'
+            }
+
+            // ... Alle Jar-Dateien, die Symlinks sind, wurden nachtraeglich eingefuegt (haessliche pfad-rechnereien)
+            def command = ['zip', '-9qr', '-x@../.distignore', project.ext.pinuts.distFilename.path];
+            def haveJars = false
+            def jars = pinuts.um.libDir.listFiles().each {
+                def fname = it.getName();
+                def path = Paths.get(new URI("file:" + it.getAbsolutePath()));
+                if (!fname.endsWith(".jar") || !Files.isSymbolicLink(path)) return;
+
+                haveJars = true
+                def lname = it.toString().substring(project.ext.pinuts.um.serverHome.getAbsolutePath().length() + 1);
+                logger.quiet " ... " + lname
+                command << lname
+            }
+            // println("??? " + command.join(", "));
+            if (haveJars) {
+                exec {
+                    workingDir project.ext.pinuts.um.serverHome
+                    commandLine command
+                }
+            }
+        }
+
+        // Environment-specific
+        logger.quiet " ... ${projectRelativePath(pinuts.envDir)}/**"
+        if (pinuts.envDir.isDirectory()) {
+            ant.zip(destfile: pinuts.distFilename, update: true) {
+                zipfileset(dir: pinuts.envDir, excludesfile: distignore)
+            }
+        }
+
+        // Copy UM installer to build/ directory
+        if (project.ext.pinuts.um && project.ext.pinuts.um.installerFile) {
+            def installerFile = new File(buildDir, 'UM-current.sh')
+            logger.quiet "Copying UM installer: ${STYLE_IMPORTANT}${installerFile}${STYLE_DEFAULT}"
+            cp(project.ext.pinuts.um.installerFile, new File(buildDir, 'UM-current.sh'))
+        }
+    }
+}
+
+publish.dependsOn << dist
+
+
+task updateBuildScript(description: 'Downloads latest version of `.umstarter.gradle` and `Kickstarter.md` from gitlab', group: 'pinuts') {
+    doLast {
+        file('.umstarter.gradle').write(new URL('https://gitext.pinuts.de/um-public/kickstarter/-/raw/master/.umstarter.gradle').text, 'UTF-8')
+        file('Kickstarter.md').write(new URL('https://gitext.pinuts.de/um-public/kickstarter/-/raw/master/Kickstarter.md').text, 'UTF-8')
+        file('Dockerfile').write(new URL('https://gitext.pinuts.de/um-public/kickstarter/-/raw/master/Dockerfile').text, 'UTF-8')
+        file('.docker-entrypoint.sh').write(new URL('https://gitext.pinuts.de/um-public/kickstarter/-/raw/master/.docker-entrypoint.sh').text, 'UTF-8')
+    }
+}
+
+
+task h2console(type: Exec, description: 'Starts the H2 browser-based SQL console', group: 'pinuts') {
+    dependsOn applyConfigDefaults, stopUm
+
+    onlyIf {
+        project.ext.pinuts.um
+    }
+
+    doFirst {
+        executable(new File(pinuts.um.scriptsDir, 'h2console.sh').path)
+    }
+}
+
+
+task extractVersionFromGitBranch(type: Exec, description: 'Extracts git branch and sets `pinuts.version`', group: 'pinuts') {
+    executable('git')
+    args('branch')
+
+    standardOutput = new ByteArrayOutputStream()
+
+    ext.output = {
+        return standardOutput.toString()
+    }
+
+    doLast {
+        if (pinuts.version == null || !pinuts.version.endsWith('-SNAPSHOT')) {
+            def ciBuildRefName = System.getenv('CI_BUILD_REF_NAME');
+            if (ciBuildRefName) {
+                pinuts.version = ciBuildRefName + '-SNAPSHOT'
+            } else {
+                ext.output().split('\n').each {line ->
+                    if (line.startsWith('*')) {
+                        pinuts.version = line.substring(2) + '-SNAPSHOT'
+                    }
+                }
+            }
+        }
+    }
+}
+
+
+task vscode(description: 'Creates .eslintrc.yml and cmsbs-conf/cse/.vscode.js with references to all UM/cmsbs-conf/cse/**/*.js files.', group: 'pinuts') {
+    dependsOn applyConfigDefaults
+
+    doLast {
+        def vscodeJsFile = file('cmsbs-conf/cse/.vscode.js')
+        def references = []
+        def rootDir = file(".")
+
+        references << new File(pinuts.um.cmsbsWorkDir, 'cse/UM.d.ts')
+
+        def tree = fileTree(dir: pinuts.um.cseDir, includes: ['**/*.js', '**/*.es6', '**/*.mjs', '**/*.d.ts'], excludes: ['**/public/**/*.js'])
+        tree.each {File file ->
+           references << file
+        }
+
+        references.sort()
+
+        def sb = new StringBuilder()
+        references.each {file ->
+            sb.append("/// <reference path=\"../../${projectRelativePath(file)}\" />\n")
+        }
+
+        vscodeJsFile.write(sb.toString(), 'UTF-8')
+
+        def globalsFile = new File(pinuts.um.cmsbsWorkDir, 'cse/UM.globals')
+        def eslintrcFile = file('cmsbs-conf/.eslintrc.js')
+
+        if (!eslintrcFile.exists() || globalsFile.exists()) {
+            def globals = ''
+            if (globalsFile.exists()) {
+                globalsFile.text.split("\n").each{ key -> globals += "${key}: false, "}
+                globals += "Map: false"
+            }
+
+            def eslintrc =
+"""module.exports = {
+    extends: [
+        '@pinuts/eslint-config-pinuts-um'
+    ],
+    globals: {${globals}}
+}
+"""
+            eslintrcFile.write(eslintrc, 'UTF-8')
+        }
+    }
+}
+
+
+ext.downloadFile = {url, filename ->
+    if (!file(filename).isFile()) {
+        logger.quiet("${STYLE_DEBUG}Downloading $filename from $url${STYLE_DEFAULT}")
+        file(filename) << new URL(url).text
+    }
+}
+
+
+/* ============================================= Docker ============================ */
+
+
+task dockerImage(type: Exec, description: 'Creates a docker image containing this UM.', group: 'pinuts') {
+    dependsOn dist
+
+    onlyIf {
+        pinuts.um
+    }
+
+    doFirst {
+        cp(pinuts.distFilename, pinuts.currentDistFile)
+
+        executable('docker')
+
+        args('build')
+        args('-t')
+        args(pinuts.docker.tag)
+        args('.')
+    }
+
+    doLast {
+        println("\n${STYLE_SUCCESS}    Docker image \"${pinuts.docker.tag}\" created for environment \"${pinuts.env}\"    ${STYLE_DEFAULT}")
+    }
+}
+
+
+/* ============================================= Automatische Tests ============================ */
+
+// Trigger TestDriver
+task testDriver_umci(type: Exec) {
+    environment("UMCI", "yes")
+    commandLine "./UM/scripts/run.sh"
+    ignoreExitValue true
+
+    def fail = { msg ->
+        println("\n${STYLE_DANGER}    " + msg + "    ${STYLE_DEFAULT}")
+        throw new GradleException("./UM/scripts/run.sh: " + msg)
+    }
+
+    doLast {
+        if (execResult.exitValue == 0) {
+            println("\n${STYLE_SUCCESS}    TestDriver: OK, all tests succeeded :)    ${STYLE_DEFAULT}")
+        } else if (execResult.exitValue == 127) {
+            fail("UM: CSE did not start")
+        } else if (execResult.exitValue == 128) {
+            fail("UM: License problem")
+        } else if (execResult.exitValue == 129) {
+            fail("UM: Needs DB schema upgrade")
+        } else if (execResult.exitValue == 130) {
+            fail("UM: Interrupted")
+        } else if (execResult.exitValue == 131) {
+            fail("TestDriver: Tests failed :(")
+        } else {
+            execResult.rethrowFailure()
+        }
+    }
+}
+
+
+task flushLocalData(description: 'Empties cmsbs-work/ directory.', group: 'Pinuts') {
+    dependsOn applyConfigDefaults
+
+    doLast {
+        delete new File(pinuts.um.cmsbsWorkDir, 'db.h2.mv.db')
+        delete new File(pinuts.um.cmsbsWorkDir, 'db.h2.trace.db')
+        fileTree(pinuts.um.cmsbsWorkDir).include('*.log').each { source ->
+            delete source
+        }
+    }
+}

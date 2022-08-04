@@ -1,0 +1,10 @@
+
+tomcat_setup$Boolean=false
+database_setup$Boolean=false
+license_setup$Boolean=false
+email_setup$Boolean=false
+smtp_setup$Boolean=false
+imap_setup$Boolean=false
+
+# Embedded Tomcat
+sys.component.238614$Boolean=true

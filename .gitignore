@@ -1,0 +1,15 @@
+/build
+/UM
+/.gradle
+/plugins
+*~
+.nfs*
+._*
+.DS_Store
+
+/.classpath
+/.project
+/.settings/
+/.vscode/
+/umkickstarter
+

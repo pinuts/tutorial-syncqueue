@@ -1,0 +1,11 @@
+stages:
+    - Test
+    - Snapshot
+    - Release
+
+TestDriver-Tests:
+    stage: Test
+    script:
+        - |
+            gradle setup test --no-daemon
+
