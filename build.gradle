@@ -8,6 +8,8 @@ dependencies {
 
     runtime('de.pinuts.cmsbs:CseConsole:7.32.3')
     runtime('de.pinuts.cmsbs:TestDriver2:2.0.14')
+    
+    runtime('de.pinuts.cmsbs:SyncQueue:1.3.5')
 }
 
 pinuts.projectName = 'MyProject'
