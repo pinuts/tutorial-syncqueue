@@ -26,7 +26,7 @@ const fn = (payload) => {
                 ret = `HTTP error: ${rsp.status}`;  // string = recoverable error
             })
             .then(rsp => {
-                ret = true;
+                ret = true; // true = success
             });
     } else {
         // Send DELETE request...
