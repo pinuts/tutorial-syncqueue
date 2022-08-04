@@ -18,11 +18,7 @@ class MyCommitCallback extends CommitCallback {
     postCommit(e) {
         if (e.get('entrytype') == 'customer') {
             console.log('postCommit:', e);
-            if (e.isNew) {
-                queue.push({ createOid: e.oid });
-            } else {
-                queue.push({ updateOid: e.oid });
-            }
+            queue.push({ oid: e.oid });
         }
     }
 
@@ -32,7 +28,7 @@ class MyCommitCallback extends CommitCallback {
     preRemove(e) {
         if (e.get('entrytype') == 'customer') {
             console.log('preRemove:', e);
-            queue.push({ deleteOid: e.oid });
+            queue.push({ oid: e.oid });
         }
     }
 }
