@@ -48,6 +48,11 @@ project.ext.pinuts.envDir = file('env/' + project.ext.pinuts.env)
 // Shortcut:
 ext.pinuts = project.ext.pinuts
 
+def isUnix = isFamily(FAMILY_UNIX)
+def isMac = isFamily(FAMILY_MAC)
+def isUnixLike = isUnix || isMac
+def isWindows = !isUnixLike
+
 // Colors and text styles:
 def ESC = '\u001b'
 ext.STYLE_NORMAL = "${ESC}[0m"
@@ -190,6 +195,22 @@ ext.getCmsbsPluginDistFile = { ->
     return new File(buildDir, pinuts.projectName + suffix + '.zip')
 }
 
+ext.enableWindows = (configurations) -> {
+    if (isWindows) {
+        def umDep = null
+        configurations.runtime.allDependencies.forEach(dep -> {
+            if (dep.group == 'de.pinuts.cmsbs' && dep.name == 'UM') {
+                umDep = dep
+                println("Adding dependency for Windows64 UM installer...")
+            }
+        })
+        if (umDep) {
+            dependencies {
+                runtime(group: umDep.group, name: umDep.name, version: umDep.version, classifier: 'windows64', ext: 'exe')
+            }
+        }
+    }
+}
 
 task applyConfigDefaults(description: 'Applies sensible defaults', group: 'Pinuts') {
     doLast {
@@ -200,6 +221,7 @@ task applyConfigDefaults(description: 'Applies sensible defaults', group: 'Pinut
             pinuts.um.serverHome = file(project.ext.pinuts.um.serverHome)
             pinuts.um.cmsbsWorkDir = new File(project.ext.pinuts.um.serverHome, 'cmsbs-work')
             pinuts.um.cmsbsConfDir = new File(project.ext.pinuts.um.serverHome, 'cmsbs-conf')
+            pinuts.um.cmsbsProperties = new File(project.ext.pinuts.um.serverHome, 'cmsbs-conf/cmsbs.properties')
             pinuts.um.libDir = new File(project.ext.pinuts.um.serverHome, 'cmsbs/WEB-INF/lib')
             pinuts.um.docDir = new File(project.ext.pinuts.um.serverHome, 'doc')
             pinuts.um.scriptsDir = new File(project.ext.pinuts.um.serverHome, 'scripts')
@@ -235,7 +257,7 @@ task stopUm(description: 'Stops UM', group: 'pinuts') {
     doLast {
         def instanceId = "UM_STANDALONE_" + System.getProperty('user.name') + "_" + pinuts.um.port
 
-        if (isFamily(FAMILY_MAC) || isFamily(FAMILY_UNIX)) {
+        if (isUnixLike) {
             // Try to stop gracefully
 
             def pkillCommand = ["pkill", "-f", instanceId]
@@ -266,7 +288,7 @@ task stopUm(description: 'Stops UM', group: 'pinuts') {
                 throw new GradleException('Unable to kill UM')
             }
         } else {
-            throw new GradleException("TBI on Windows...")
+            logger.error("TBI on Windows...")
         }
     }
 }
@@ -328,8 +350,8 @@ task downloadUmInstallerVarfile(description: 'Downloads the UM installer var fil
             } else {
                 logger.quiet("${STYLE_NORMAL}Generating ${installerVarfile}...${STYLE_DEFAULT}")
                 installerVarfile.write("""
-sys.installationDir=$project.ext.pinuts.um.serverHome
-license_file=$project.ext.pinuts.um.localLicenseFile
+sys.installationDir=${project.ext.pinuts.um.serverHome.path.replace('\\', '\\\\')}
+license_file=${project.ext.pinuts.um.localLicenseFile.path.replace('\\', '\\\\')}
 
 database_setup\$Boolean=true
 database_type\$Integer=6
@@ -376,6 +398,9 @@ task installUm(description: 'Installs the Universal Messenger', group: 'pinuts')
             if (depFile.name.matches(/UM-.*\.sh/)) {
                 installerFile = depFile
                 if (project.ext.pinuts.um.installerFile == null) project.ext.pinuts.um.installerFile = installerFile
+            } else if (depFile.name.matches(/UM-.*\.exe/)) {
+                installerFile = depFile
+                if (project.ext.pinuts.um.installerFile == null) project.ext.pinuts.um.installerFile = installerFile
             }
         }
     }
@@ -386,7 +411,13 @@ task installUm(description: 'Installs the Universal Messenger', group: 'pinuts')
 
             pinuts.um.serverHome.mkdirs()
 
-            def command = ["sh", installerFile.path, "-q", "-varfile", pinuts.um.localInstallerVarFile.path]
+            def command
+            if (isUnixLike) {
+                command = ["sh", installerFile.path, "-q", "-varfile", pinuts.um.localInstallerVarFile.path]
+            } else {
+                command = [installerFile.path, "-q", "-varfile", pinuts.um.localInstallerVarFile.path]
+            }
+
             def pb = new ProcessBuilder(command);
             def p = pb.start()
             p.waitForOrKill(120000)
@@ -394,11 +425,13 @@ task installUm(description: 'Installs the Universal Messenger', group: 'pinuts')
                 throw new GradleException('Installer failed with exit code ' + p.exitValue() + ': ' + command.join(' ') + '\n' + p.inputStream.text + p.errorStream.text)
             }
 
-            def umrcFile = new File(pinuts.um.scriptsDir, '.umrc')
-            def umrcContent = umrcFile.getText('latin1')
+            if (isUnixLike) {
+                def umrcFile = new File(pinuts.um.scriptsDir, '.umrc')
+                def umrcContent = umrcFile.getText('latin1')
 
-            umrcContent = umrcContent.replaceAll(/[# ]*export SERVER_PORT=.*/, "export SERVER_PORT=${project.ext.pinuts.um.port}")
-            umrcFile.write(umrcContent, 'latin1')
+                umrcContent = umrcContent.replaceAll(/[# ]*export SERVER_PORT=.*/, "export SERVER_PORT=${project.ext.pinuts.um.port}")
+                umrcFile.write(umrcContent, 'latin1')
+            }
 
             if (pinuts.um.jdbcDriver) {
                 def url = new URL(pinuts.um.jdbcDriver);
@@ -425,9 +458,14 @@ task umSchemaUpdate(description: 'Performs UM schema update', group: 'pinuts') {
     }
 
     doLast {
-        def schemaUpdateScript = new File(pinuts.um.scriptsDir, 'schemaUpdate.sh')
+        def schemaUpdateScript = new File(pinuts.um.scriptsDir, isUnixLike ? 'schemaUpdate.sh' : 'schemaUpdate.bat')
         logger.quiet "Running DB schema update: ${schemaUpdateScript.path}"
-        def command = ["sh", schemaUpdateScript.path, "cmsbs.properties", "update"]
+        def command
+        if (isUnixLike) {
+            command = ["sh", schemaUpdateScript.path, pinuts.um.cmsbsProperties.path, "update"]
+        } else {
+            command = [schemaUpdateScript.path, pinuts.um.cmsbsProperties.path, "update"]
+        }
         def pb = new ProcessBuilder(command)
         def p = pb.start()
         p.waitForOrKill(1000 * 60 * 60)
@@ -468,15 +506,12 @@ task startUm(description: 'Starts UM', group: 'pinuts') {
 
     doLast {
         logger.quiet "Starting UM at ${STYLE_IMPORTANT}${project.ext.pinuts.um.guiUrl}${STYLE_DEFAULT}"
-        if (isFamily(FAMILY_MAC) || isFamily(FAMILY_UNIX)) {
-            def command = [new File(project.ext.pinuts.um.scriptsDir, 'startup.sh').path]
-            def pb = new ProcessBuilder(command)
-            def env = pb.environment()
-            env.put("SERVER_PORT", "$project.ext.pinuts.um.port")
-            def p = pb.start()
-        } else {
-            throw new GradleException("TBI on Windows...")
-        }
+
+        def command = [new File(project.ext.pinuts.um.scriptsDir, isUnixLike ? 'startup.sh' : 'startup.bat').path]
+        def pb = new ProcessBuilder(command)
+        def env = pb.environment()
+        env.put("SERVER_PORT", "$project.ext.pinuts.um.port")
+        def p = pb.start()
     }
 }
 
@@ -501,7 +536,7 @@ task run(type: Exec, description: 'Starts UM and shows stdout until Ctrl+C', gro
     doFirst {
         logger.quiet "Starting UM at $project.ext.pinuts.um.guiUrl"
 
-        executable(new File(pinuts.um.scriptsDir, 'run.sh').path)
+        executable(new File(pinuts.um.scriptsDir, isUnixLike ? 'run.sh' : 'run.bat').path)
         environment("SERVER_PORT", "$project.ext.pinuts.um.port")
     }
 }
@@ -616,7 +651,7 @@ task h2console(type: Exec, description: 'Starts the H2 browser-based SQL console
     }
 
     doFirst {
-        executable(new File(pinuts.um.scriptsDir, 'h2console.sh').path)
+        executable(new File(pinuts.um.scriptsDir, isUnixLike ? 'h2console.sh' : 'h2console.bat').path)
     }
 }
 

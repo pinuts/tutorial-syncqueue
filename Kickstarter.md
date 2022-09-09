@@ -66,6 +66,16 @@ setup.doLast {
 ```
 Beispiele und API-Dokumentation gibt es hier: [UM-API-Doc](https://www.universal-messenger.de/knowledge-base/intern/doc-api/api-cse/)
 
+## REST-Proxy in Entwicklungsumgebung nutzen
+
+Soll der REST-Proxy auch im embedded Tomcat lokal unter `/p` erreichbar sein, geht das wie folgt:
+```groovy
+setup.doLast {
+    cp('rest-proxy/cmsbs-restproxy.properties', new File(pinuts.um.serverHome, 'cmsbs-restproxy.properties'))
+    cp('UM/web-integration/cmsbs-restproxy.war', new File(pinuts.um.webappsDir, 'p.war'))
+}
+```
+
 ## "Deployables" bauen
 
 Umgebungsspezifische Konfiguration kommt nach `env/${ENVIRONMENT}/cmsbs-conf/` und die üblichen
@@ -89,10 +99,15 @@ Weitere Dateien kann man in einem _dist.doLast_-Block ins ZIP-File aufnehmen. Da
 eignet sich [_ant.zip_](https://ant.apache.org/manual/Tasks/zip.html) besonders gut, z.B.
 ```groovy
 dist.doLast {
-    // REST-Proxy:
+    // REST-Proxy: Add log4j2.properties to cmsbs-restproxy.war
+    ant.zip(destfile: 'UM/web-integration/cmsbs-restproxy.war', update: true) {
+        zipfileset(dir: 'rest-proxy', includes: 'log4j2.properties', fullpath: 'WEB-INF/classes/log4j2.properties')
+    }
+    // REST-Proxy: Add cmsbs-restproxy.war as p.war
     ant.zip(destfile: pinuts.distFilename, update: true) {
         zipfileset(dir: 'UM/web-integration', includes: 'cmsbs-restproxy.war', fullpath: 'cmsbs-work/webapps/p.war')
     }
+    // REST-Proxy: Add cmsbs-restproxy.properties
     ant.zip(destfile: pinuts.distFilename, update: true) {
         zipfileset(dir: 'rest-proxy', includes: 'cmsbs-restproxy.properties')
     }

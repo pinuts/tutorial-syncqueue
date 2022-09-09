@@ -4,7 +4,7 @@ apply from: '.umstarter.gradle'
 
 dependencies {
     // UM Release Notes: https://pinutswiki.atlassian.net/wiki/x/AQDvXg
-    runtime('de.pinuts.cmsbs:UM:7.47.0')
+    runtime('de.pinuts.cmsbs:UM:7.48.0')
 
     runtime('de.pinuts.cmsbs:CseConsole:7.32.3')
     runtime('de.pinuts.cmsbs:TestDriver2:2.0.14')

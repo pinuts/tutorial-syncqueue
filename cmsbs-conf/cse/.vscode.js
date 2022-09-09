@@ -450,4 +450,6 @@
 /// <reference path="../../UM/cmsbs-conf/cse/plugins/de.pinuts.cmsbs.testdriver2/shared/testHelper.d.ts" />
 /// <reference path="../../UM/cmsbs-conf/cse/plugins/de.pinuts.cmsbs.testdriver2/shared/testHelper.es6" />
 /// <reference path="../../UM/cmsbs-conf/cse/plugins/de.pinuts.tutorial.test/custom/first-test.es6" />
+/// <reference path="../../UM/cmsbs-conf/cse/plugins/de.pinuts.tutorial/shared/CommitCallback.mjs" />
+/// <reference path="../../UM/cmsbs-conf/cse/plugins/de.pinuts.tutorial/shared/queue.mjs" />
 /// <reference path="../../UM/cmsbs-work/cse/UM.d.ts" />
