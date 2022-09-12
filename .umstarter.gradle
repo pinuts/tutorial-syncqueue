@@ -288,7 +288,15 @@ task stopUm(description: 'Stops UM', group: 'pinuts') {
                 throw new GradleException('Unable to kill UM')
             }
         } else {
-            logger.error("TBI on Windows...")
+            if (pinuts.um && pinuts.um.pidFile.isFile()) {
+                def pid = pinuts.um.pidFile.text
+                def pkillCommand = ["taskkill", "/t", "/f", "/pid", pid]
+                logger.quiet "Stoppping UM: ${STYLE_DEBUG}${pkillCommand.join(' ')}${STYLE_DEFAULT}"
+                def pkill = new ProcessBuilder(pkillCommand)
+                pkill.start().waitFor()
+
+                pinuts.um.pidFile.delete()
+            }
         }
     }
 }
